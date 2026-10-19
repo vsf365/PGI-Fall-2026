@@ -1,0 +1,28 @@
+# Core
+requests>=2.31
+pandas>=2.0
+numpy>=1.24
+python-dotenv>=1.0
+
+# Data ingestion
+beautifulsoup4>=4.12
+lxml>=4.9
+yfinance>=0.2.30
+gridstatus>=0.26
+
+# Modeling
+scikit-learn>=1.3
+xgboost>=2.0
+lightgbm>=4.0
+statsmodels>=0.14
+
+# Visualization & reporting
+matplotlib>=3.7
+seaborn>=0.12
+
+# Testing
+pytest>=7.0
+
+# Utilities
+tqdm>=4.65
+pyarrow>=14.0

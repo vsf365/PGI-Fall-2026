@@ -1,0 +1,38 @@
+# API keys
+configs/.env
+
+# Data (large files)
+data/raw/
+data/interim/
+data/curated/
+*.parquet
+*.csv
+*.pkl
+
+# Keep directory structure
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/curated/.gitkeep
+!data/manifests/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Notebooks
+.ipynb_checkpoints/
