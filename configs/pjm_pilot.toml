@@ -1,0 +1,32 @@
+[study]
+timezone = "America/New_York"
+node_id = 1
+node_name = "PJM-RTO"
+load_area = "RTO"
+pre_hours = 6
+post_hours = 6
+min_initial_power_pct = 90
+min_weather_stations = 2
+min_holdout_events = 10
+min_market_coverage = 0.99
+min_control_coverage = 0.90
+bootstrap_draws = 2000
+seed = 20261025
+
+[periods]
+smoke = ["2023-01-01", "2023-02-01"]
+development = ["2018-01-01", "2023-01-01"]
+validation = ["2023-01-01", "2024-01-01"]
+holdout = ["2024-01-01", "2026-01-01"]
+
+[weather]
+# Chicago O'Hare, Pittsburgh International, Philadelphia International, Baltimore/Washington.
+stations = ["72530094846", "72520094823", "72408013739", "72406093721"]
+url = "https://noaa-global-hourly-pds.s3.amazonaws.com/{year}/{station}.csv"
+
+[sources]
+eia860_index = "https://www.eia.gov/electricity/data/eia860/"
+nrc_scrams = "https://www.nrc.gov/cdn/legacy/reactors/operating/dataset/scram-event-notifications.xlsx"
+da = "da_hrl_lmps"
+rt = "rt_hrl_lmps"
+load = "hrl_load_metered"

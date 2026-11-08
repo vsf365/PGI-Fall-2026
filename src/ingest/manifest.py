@@ -34,7 +34,7 @@ class ManifestEntry:
     retrieved_at: str
     source_file_hash: str
     parser_version: str
-    row_count: int
+    row_count: Optional[int]
     min_observed_at: Optional[str] = None
     max_observed_at: Optional[str] = None
     revision_count: int = 0

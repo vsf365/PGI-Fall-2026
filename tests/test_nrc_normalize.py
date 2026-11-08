@@ -16,7 +16,8 @@ def test_normalize_pipe_delimited_status_and_keep_publication_unknown(tmp_path: 
     [row] = normalize_file(raw)
 
     assert row["unit_name"] == "Example Unit 1"
-    assert row["observed_at"] == "2026-10-25T00:00:00+00:00"
+    assert row["report_date"] == "2026-10-25"
+    assert row["observed_at"] is None
     assert row["reported_power_pct"] == 87
     assert row["published_at"] is None
     assert row["available_at"] is None

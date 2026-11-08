@@ -2,6 +2,8 @@
 
 ## 1. Objective
 
+The [PJM pilot workflow](README.md) is the first implementation of this blueprint. It starts with documented unplanned trips and tests their association with real-time prices and the real-time minus day-ahead spread. The perfect-information benchmark determines whether to proceed to outage forecasting and environmental leading indicators. The broader phases below describe later work.
+
 Build a reproducible, point-in-time research system that tests whether public environmental and grid data can predict nuclear-reactor deratings or outages **before the information is fully incorporated into wholesale electricity prices or nuclear-exposed equities**.
 
 The project has two distinct goals:

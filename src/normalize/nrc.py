@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-from datetime import datetime, timezone
+from datetime import date, datetime
+from io import StringIO
 import json
 from pathlib import Path
 import re
@@ -12,7 +13,7 @@ from typing import Any
 
 from configs.config import CURATED_DIR
 
-PARSER_VERSION = "nrc-status-1"
+PARSER_VERSION = "nrc-status-2"
 REQUIRED_COLUMNS = {"reportdt", "unit", "power"}
 
 
@@ -20,11 +21,11 @@ def _key(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower().lstrip("\ufeff"))
 
 
-def _parse_report_date(value: str) -> datetime:
+def _parse_report_date(value: str) -> date:
     value = value.strip()
     for pattern in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y", "%Y-%m-%d"):
         try:
-            return datetime.strptime(value, pattern).replace(tzinfo=timezone.utc)
+            return datetime.strptime(value, pattern).date()
         except ValueError:
             continue
     raise ValueError(f"Unrecognized NRC report date: {value!r}")
@@ -39,10 +40,10 @@ def normalize_file(path: str | Path) -> list[dict[str, Any]]:
     MW without a point-in-time capacity crosswalk.
     """
     source = Path(path)
-    text = source.read_text(encoding="utf-8-sig")
-    first_line = next((line for line in text.splitlines() if line.strip()), "")
+    text = source.read_text(encoding="utf-8-sig").lstrip("\r\n")
+    first_line = text.partition("\n")[0]
     delimiter = "|" if first_line.count("|") >= first_line.count(",") else ","
-    reader = csv.DictReader(text.splitlines(), delimiter=delimiter)
+    reader = csv.DictReader(StringIO(text), delimiter=delimiter)
     if not reader.fieldnames:
         raise ValueError(f"No header row in {source}")
     columns = {_key(name): name for name in reader.fieldnames if name}
@@ -51,7 +52,8 @@ def normalize_file(path: str | Path) -> list[dict[str, Any]]:
         raise ValueError(f"Missing NRC columns {sorted(missing)} in {source}")
 
     normalized = []
-    for line_number, row in enumerate(reader, start=2):
+    for row in reader:
+        line_number = reader.line_num
         unit = (row.get(columns["unit"]) or "").strip()
         if not unit:
             continue
@@ -63,11 +65,12 @@ def normalize_file(path: str | Path) -> list[dict[str, Any]]:
         if power is not None and not 0 <= power <= 120:
             raise ValueError(f"Power outside expected 0-120% range on line {line_number}: {power}")
 
-        observed_at = _parse_report_date(row[columns["reportdt"]])
+        report_date = _parse_report_date(row.get(columns["reportdt"]) or "")
         normalized.append(
             {
                 "unit_name": unit,
-                "observed_at": observed_at.isoformat(),
+                "report_date": report_date.isoformat(),
+                "observed_at": None,
                 "published_at": None,
                 "available_at": None,
                 "reported_power_pct": power,

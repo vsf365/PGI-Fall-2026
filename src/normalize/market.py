@@ -47,7 +47,10 @@ def _load_raw_json_files(raw_dir: Path, pattern: str) -> List[Dict[str, Any]]:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = json.load(f)
                 if isinstance(content, dict) and "records" in content:
-                    all_records.extend(content["records"])
+                    all_records.extend(
+                        {**row, "source_feed": content.get("feed") or row.get("source_feed")}
+                        for row in content["records"]
+                    )
                 elif isinstance(content, list):
                     all_records.extend(content)
                 elif isinstance(content, dict) and "items" in content:
@@ -95,9 +98,9 @@ def normalize_lmps(
         raise ImportError("pandas is required for normalize_lmps")
 
     source_dir = Path(raw_dir) if raw_dir else RAW_ISO
-    records = raw_records or []
+    records = list(raw_records) if raw_records is not None else []
 
-    if not records and source_dir.exists():
+    if raw_records is None and source_dir.exists():
         # Load both DA and RT files
         records.extend(_load_raw_json_files(source_dir, "pjm_da_hrl_lmps_*.json"))
         records.extend(_load_raw_json_files(source_dir, "pjm_rt_hrl_lmps_*.json"))
@@ -127,12 +130,12 @@ def normalize_lmps(
 
     # Parse timestamps
     if "datetime_beginning_utc" in df.columns:
-        df["interval_start_utc"] = pd.to_datetime(df["datetime_beginning_utc"], utc=True)
+        df["interval_start_utc"] = pd.to_datetime(df["datetime_beginning_utc"], utc=True, format="mixed")
     elif "datetime_beginning_ept" in df.columns:
         # EPT is US/Eastern
         df["interval_start_utc"] = (
             pd.to_datetime(df["datetime_beginning_ept"])
-            .dt.tz_localize("US/Eastern", ambiguous="NaT", nonexistent="shift_forward")
+            .dt.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
             .dt.tz_convert("UTC")
         )
     else:
@@ -142,14 +145,21 @@ def normalize_lmps(
     df = df.dropna(subset=["interval_start_utc"])
     df["interval_end_utc"] = df["interval_start_utc"] + pd.Timedelta(hours=1)
 
-    # Identify market (DA vs RT)
-    if "market" not in df.columns:
-        if "total_lmp_da" in df.columns or "congestion_price_da" in df.columns:
-            df["market"] = "DA"
-        elif "total_lmp_rt" in df.columns or "congestion_price_rt" in df.columns:
-            df["market"] = "RT"
-        else:
-            df["market"] = "DA"
+    # Feed identity takes precedence. Infer market only for legacy untagged rows.
+    market = df.get("market", pd.Series(index=df.index, dtype="object"))
+    if "source_feed" in df:
+        feed_market = df["source_feed"].map({
+            "da_hrl_lmps": "DA", "rt_hrl_lmps": "RT",
+            "da_hrl_lmps_archived": "DA", "rt_hrl_lmps_archived": "RT",
+        })
+        market = feed_market.combine_first(market)
+    da = df.filter(regex="_da$").notna().any(axis=1)
+    rt = df.filter(regex="_rt$").notna().any(axis=1)
+    if (market.isna() & (da == rt)).any():
+        raise ValueError("Cannot identify DA or RT for an untagged price row")
+    df["market"] = market.mask(market.isna() & da, "DA").mask(market.isna() & rt, "RT")
+    if not df["market"].isin(["DA", "RT"]).all():
+        raise ValueError("Unexpected PJM market label")
 
     # Identify node/zone
     if "pnode_name" in df.columns:
@@ -174,14 +184,23 @@ def normalize_lmps(
 
     obs_records = []
     base_cols = ["iso", "market", "node_or_zone", "pnode_id", "interval_start_utc", "interval_end_utc"]
+    base_cols += [col for col in ("source_feed", "source_id", "version_nbr", "row_is_current") if col in df]
     df["iso"] = "PJM"
 
     for val_type, possible_cols in price_cols_map.items():
-        matched_col = next((c for c in possible_cols if c in df.columns), None)
-        if matched_col is not None:
-            sub_df = df[base_cols].copy()
+        for market_name in ("DA", "RT"):
+            market_rows = df[df["market"] == market_name]
+            suffix = "_" + market_name.lower()
+            candidates = [c for c in possible_cols if c in df and
+                          (c.endswith(suffix) or not c.endswith(("_da", "_rt")))]
+            if not candidates or market_rows.empty:
+                continue
+            sub_df = market_rows[base_cols].copy()
             sub_df["value_type"] = val_type
-            sub_df["value"] = pd.to_numeric(df[matched_col], errors="coerce")
+            values = pd.to_numeric(market_rows[candidates[0]], errors="coerce")
+            for col in candidates[1:]:
+                values = values.combine_first(pd.to_numeric(market_rows[col], errors="coerce"))
+            sub_df["value"] = values
             sub_df["unit"] = "$/MWh"
             sub_df["status"] = "actual"
             obs_records.append(sub_df)

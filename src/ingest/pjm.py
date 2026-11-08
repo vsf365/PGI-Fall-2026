@@ -25,7 +25,7 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 import sys
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import requests
 
@@ -139,6 +139,7 @@ def _paginated_fetch(
     row_count: int = DEFAULT_ROW_COUNT,
     rate_sleep: float = RATE_LIMIT_SLEEP,
     try_archived_fallback: bool = True,
+    on_page: Callable[[requests.Response], None] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Fetch all pages for a given PJM feed with pagination, rate limiting, and retries.
@@ -156,6 +157,8 @@ def _paginated_fetch(
         List of record dictionaries.
     """
     key = api_key or PJM_API_KEY
+    if not key or key.startswith("PASTE_"):
+        raise ValueError("Set PJM_API_KEY before requesting PJM Data Miner data")
     headers = dict(PJM_HEADERS)
     if key:
         headers["Ocp-Apim-Subscription-Key"] = key
@@ -167,6 +170,7 @@ def _paginated_fetch(
     current_feed = feed_name
     endpoint_url = f"{PJM_BASE_URL}/{current_feed}"
 
+    expected_total = None
     while True:
         query_params = dict(params)
         query_params["startRow"] = start_row
@@ -177,6 +181,7 @@ def _paginated_fetch(
         )
 
         response = None
+        requested_feed = current_feed
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 # Respect rate limiting before each request
@@ -201,7 +206,8 @@ def _paginated_fetch(
                         f"HTTP 429 Rate limit hit. Backing off for {sleep_time:.1f}s (attempt {attempt}/{MAX_RETRIES})"
                     )
                     time.sleep(sleep_time)
-                elif response.status_code in (404, 400) and try_archived_fallback and not current_feed.endswith("_archived"):
+                elif (response.status_code in (404, 400) and try_archived_fallback
+                      and page == 1 and not current_feed.endswith("_archived")):
                     logger.warning(
                         f"Feed {current_feed} returned HTTP {response.status_code}. Trying archived endpoint: {feed_name}_archived"
                     )
@@ -217,23 +223,25 @@ def _paginated_fetch(
                 else:
                     response.raise_for_status()
 
+            except requests.HTTPError:
+                raise
             except requests.RequestException as e:
                 logger.error(f"Network error on attempt {attempt}: {e}")
                 if attempt == MAX_RETRIES:
                     raise
                 time.sleep(rate_sleep * (BACKOFF_FACTOR ** attempt))
 
-        if response is None or response.status_code != 200:
-            logger.error(
-                f"Failed to fetch {current_feed}: {response.status_code if response else 'No response'}"
-            )
-            break
+        if response is None:
+            raise RuntimeError(f"No response for {current_feed}")
+        if response.status_code != 200:
+            if current_feed != requested_feed:
+                continue
+            response.raise_for_status()
 
         try:
             payload = response.json()
         except ValueError:
-            logger.error(f"Failed to parse JSON response from {current_feed}: {response.text[:200]}")
-            break
+            raise ValueError(f"Invalid JSON response for {current_feed}")
 
         # Extract items from payload
         items: List[Dict[str, Any]] = []
@@ -242,8 +250,10 @@ def _paginated_fetch(
         if isinstance(payload, list):
             items = payload
         elif isinstance(payload, dict):
-            items = payload.get("items", payload.get("data", []))
+            items = payload.get("items", payload.get("data"))
             total_rows = payload.get("totalRows", payload.get("total", None))
+        if not isinstance(items, list) or not isinstance(payload, (dict, list)):
+            raise ValueError(f"Unexpected response schema for {current_feed}")
 
         if not items:
             # If no items returned on page 1 and not yet archived, try archived feed once
@@ -257,19 +267,27 @@ def _paginated_fetch(
             logger.info(f"No further records returned for {current_feed}. Finished pagination.")
             break
 
+        if on_page:
+            on_page(response)
+        if total_rows is not None:
+            total_rows = int(total_rows)
+            if expected_total is not None and expected_total != total_rows:
+                raise ValueError(f"Row count changed during pagination for {current_feed}")
+            expected_total = total_rows
         all_records.extend(items)
         logger.info(f"Fetched {len(items)} records (total accumulated: {len(all_records)})")
 
         # Stop conditions
-        if len(items) < row_count:
-            # Last page reached
+        if expected_total is not None and len(all_records) >= expected_total:
             break
-        if total_rows is not None and len(all_records) >= total_rows:
+        if expected_total is None and len(items) < row_count:
             break
 
-        start_row += row_count
+        start_row += len(items)
         page += 1
 
+    if expected_total is not None and len(all_records) != expected_total:
+        raise ValueError(f"Incomplete pagination for {current_feed}: {len(all_records)}/{expected_total}")
     return all_records
 
 

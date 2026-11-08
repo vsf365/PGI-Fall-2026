@@ -23,6 +23,7 @@ from bs4 import BeautifulSoup
 from configs.config import MANIFEST_DIR, RAW_NRC
 
 ARCHIVE_URL = "https://www.nrc.gov/documents-reports/document-collections/events-reports-associated-with/power-reactor-status-reports/{year}"
+LEGACY_ARCHIVE_URL = "https://www.nrc.gov/reading-rm/doc-collections/event-status/reactor-status/{year}/index"
 PARSER_VERSION = "nrc-raw-1"
 
 
@@ -34,33 +35,42 @@ def _discover_annual_file(year: int, session: requests.Session) -> tuple[str, by
     """Find and download the annual raw status text file from the NRC index."""
     index_url = ARCHIVE_URL.format(year=year)
     response = session.get(index_url, timeout=60)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.content, "html.parser")
+    if response.status_code in (403, 404):
+        response = session.get(LEGACY_ARCHIVE_URL.format(year=year), timeout=60)
+    if response.status_code in (403, 404):
+        # The archive also exposes the annual file at a stable direct link.
+        file_url = f"{index_url}/{year}PowerStatus.txt"
+    else:
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "html.parser")
+        for link in soup.find_all("a", href=True):
+            label = " ".join(link.get_text(" ", strip=True).lower().split())
+            if "power status" in label and "raw data" in label and "text" in label:
+                file_url = urljoin(response.url, link["href"])
+                break
+        else:
+            raise RuntimeError(f"Could not find annual raw Power Status text file at {index_url}")
+    raw_response = session.get(file_url, timeout=120)
+    raw_response.raise_for_status()
+    if not raw_response.content or raw_response.content.lstrip().startswith(b"<"):
+        raise ValueError(f"Expected NRC status text at {raw_response.url}")
+    return raw_response.url, raw_response.content
 
-    for link in soup.find_all("a", href=True):
-        label = " ".join(link.get_text(" ", strip=True).lower().split())
-        href = link["href"]
-        if "power status" in label and "raw data" in label and "text" in label:
-            file_url = urljoin(index_url, href)
-            raw_response = session.get(file_url, timeout=120)
-            raw_response.raise_for_status()
-            return file_url, raw_response.content
-    raise RuntimeError(f"Could not find annual raw Power Status text file at {index_url}")
 
-
-def fetch_year(year: int, *, session: requests.Session | None = None) -> Path:
+def fetch_year(year: int, *, session: requests.Session | None = None,
+               raw_dir: Path = RAW_NRC / "annual", manifest_dir: Path = MANIFEST_DIR) -> Path:
     """Save an immutable annual snapshot and append its provenance manifest."""
     http = session or requests.Session()
     url, content = _discover_annual_file(year, http)
     retrieved_at = _utc_now()
     digest = hashlib.sha256(content).hexdigest()
 
-    target_dir = RAW_NRC / "annual"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"nrc_power_status_{year}_{retrieved_at:%Y%m%dT%H%M%S}.{digest[:12]}.txt"
-    target.write_bytes(content)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    target = raw_dir / f"nrc_power_status_{year}_{retrieved_at:%Y%m%dT%H%M%S%f}.{digest[:12]}.txt"
+    with target.open("xb") as handle:
+        handle.write(content)
 
-    MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+    manifest_dir.mkdir(parents=True, exist_ok=True)
     entry = {
         "run_id": f"nrc-{year}-{retrieved_at:%Y%m%dT%H%M%S}-{digest[:12]}",
         "source_name": "nrc_power_reactor_status",
@@ -74,7 +84,7 @@ def fetch_year(year: int, *, session: requests.Session | None = None) -> Path:
         "source_year": year,
         "file_path": str(target),
     }
-    with (MANIFEST_DIR / "ingest_manifest.jsonl").open("a", encoding="utf-8") as manifest:
+    with (manifest_dir / "ingest_manifest.jsonl").open("a", encoding="utf-8") as manifest:
         manifest.write(json.dumps(entry, sort_keys=True) + "\n")
     return target
 
