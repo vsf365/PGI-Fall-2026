@@ -22,6 +22,10 @@ CROSSWALK_FIELDS = (
     "docket", "unit_name", "plant_code", "generator_id", "effective_from",
     "effective_to", "evidence",
 )
+CANDIDATE_FIELDS = (
+    "event_id", "event_date", "docket", "reactor", "notification_number", "notice_url",
+    "retracted", "candidate_source_id",
+)
 
 
 def workbook_rows(book, sheet: str, header_row: int):
@@ -30,7 +34,7 @@ def workbook_rows(book, sheet: str, header_row: int):
     return [dict(zip(headers, row)) for row in rows if any(value is not None for value in row)]
 
 
-def candidates(path: Path) -> pd.DataFrame:
+def candidates(path: Path, source_id: str = "") -> pd.DataFrame:
     from openpyxl import load_workbook
 
     with path.open("rb") as handle:
@@ -49,11 +53,60 @@ def candidates(path: Path) -> pd.DataFrame:
             "notification_number": str(row["Event_Notification_Number"] or "").removesuffix(".0"),
             "notice_url": row["Link"],
             "retracted": str(row["NRC_retract_flag"]).strip() in {"1", "1.0", "True"},
+            "candidate_source_id": source_id,
         })
     frame = pd.DataFrame.from_records(records)
     if frame.empty or frame["event_id"].duplicated().any():
         raise ValueError("Scram workbook contains no candidates or duplicate candidate IDs")
     return frame
+
+
+def notice_candidates(raw: bytes, source: dict) -> list[dict]:
+    """Identify possible trips for review from an official notice report."""
+    page = BeautifulSoup(raw, "html.parser").get_text(" ", strip=True)
+    blocks = re.split(r"\bEvent\s+Number\s*:\s*(\d+)\b", page, flags=re.I)
+    rows = []
+    for number, body in zip(blocks[1::2], blocks[2::2]):
+        facility = re.search(r"\bFacility:\s*(.+?)\s+Region:", body, re.I)
+        event_date = re.search(r"\bEvent Date:\s*(\d{1,2}/\d{1,2}/\d{4})", body, re.I)
+        if not facility or not event_date:
+            continue
+        narrative = re.split(r"\bEvent Text\b", body, maxsplit=1, flags=re.I)[-1]
+        trip = re.search(
+            r"RPS Actuation\s*-\s*Critical|\b(?:scram(?:med)?|(?:reactor|unit|turbine|generator)\s+trip(?:ped)?)\b",
+            narrative, re.I,
+        ) or re.search(r"RPS Actuation\s*-\s*Critical", body, re.I)
+        if not trip:
+            continue
+        units = re.search(r"\bUnit:\s*(\[\s*\d+\s*\](?:\s*\[\s*\d+\s*\])*)", body, re.I)
+        plant = facility[1].strip()
+        reactor = f"{plant} units {', '.join(re.findall(r'[0-9]+', units[1]))}" if units else plant
+        rows.append({
+            "event_id": f"EN:{number}", "event_date": pd.Timestamp(event_date[1]).date(),
+            "docket": "", "reactor": reactor, "notification_number": number,
+            "notice_url": source["source"], "retracted": False, "candidate_source_id": source["id"],
+        })
+    return rows
+
+
+def review_queue(root: Path, by_kind: dict, config: dict) -> pd.DataFrame:
+    queue = pd.DataFrame(columns=CANDIDATE_FIELDS)
+    if "nrc_scrams" in by_kind:
+        source = by_kind["nrc_scrams"][0]
+        queue = candidates(root / source["path"], source["id"])
+    through = date.fromisoformat(config["sources"]["nrc_scrams_through"])
+    known = set(queue.notification_number)
+    extra = {}
+    notices = sorted(by_kind.get("nrc_notice", []), key=lambda s: s["metadata"].get("report_date", ""))
+    for source in notices:
+        if not source["metadata"].get("report_date"):
+            continue
+        for candidate in notice_candidates((root / source["path"]).read_bytes(), source):
+            if candidate["event_date"] >= through and candidate["notification_number"] not in known:
+                extra[candidate["event_id"]] = candidate
+    if extra:
+        queue = pd.concat([queue, pd.DataFrame(list(extra.values()))], ignore_index=True)
+    return queue
 
 
 def eia_generators(path: Path, year: int) -> pd.DataFrame:
@@ -122,7 +175,9 @@ def _classification(candidate: dict, review: dict, mapping: pd.DataFrame, genera
     row.update(eligible=False, exclusion="", scope="unknown", capacity_mw=None, estimated_lost_mw=None,
                onset_utc=pd.NaT, status_corroborated=False, status_source_ids="")
     when = candidate["event_date"]
-    units = mapping[(mapping.docket == candidate["docket"]) & (mapping.effective_from <= when)
+    docket = candidate["docket"] or review.get("docket", "")
+    row["docket"] = docket.zfill(8) if docket else ""
+    units = mapping[(mapping.docket == row["docket"]) & (mapping.effective_from <= when)
                     & (mapping.effective_to > when)]
     if len(units) > 1:
         raise ValueError(f"Overlapping crosswalk entries for {candidate['docket']} on {when}")
@@ -153,8 +208,11 @@ def _classification(candidate: dict, review: dict, mapping: pd.DataFrame, genera
         row["exclusion"] = "outside_pjm"
     elif not review or not row["reviewer"] or not row["reason"]:
         row["exclusion"] = "review_required"
-    elif row["classification"] not in {"unplanned", "planned", "ambiguous"}:
+    elif row["classification"] not in {"unplanned", "planned", "ambiguous", "not_a_trip"}:
         raise ValueError(f"Invalid review classification for {candidate['event_id']}")
+    elif row["classification"] == "not_a_trip":
+        row["exclusion"] = ("not_a_trip" if candidate["notification_number"]
+                            in notices.get(row["notice_source_id"], set()) else "review_required")
     elif row["classification"] != "unplanned":
         row["exclusion"] = row["classification"]
     elif row["known_in_advance"] != "no":
@@ -183,9 +241,7 @@ def build_ledger(root: Path, by_kind: dict, config: dict, start: date, end: date
     def single(kind):
         return root / by_kind[kind][0]["path"]
 
-    queue_columns = ("event_id", "event_date", "docket", "reactor", "notification_number", "notice_url", "retracted")
-    queue = (candidates(single("nrc_scrams")) if "nrc_scrams" in by_kind
-             else pd.DataFrame(columns=queue_columns))
+    queue = review_queue(root, by_kind, config)
     reviews = (reviewed_csv(single("event_review"), REVIEW_FIELDS, "event_id") if "event_review" in by_kind
                else pd.DataFrame(columns=REVIEW_FIELDS)).set_index("event_id")
     # Planned work may be absent from the scram list. Accept separately reviewed
@@ -199,6 +255,7 @@ def build_ledger(root: Path, by_kind: dict, config: dict, start: date, end: date
             "event_id": event_id, "event_date": date.fromisoformat(review.event_date),
             "docket": review.docket.zfill(8), "reactor": review.reactor,
             "notification_number": "", "notice_url": review.notice_url, "retracted": False,
+            "candidate_source_id": by_kind["event_review"][0]["id"],
         })
     if extra:
         queue = pd.concat([queue, pd.DataFrame(extra)], ignore_index=True)

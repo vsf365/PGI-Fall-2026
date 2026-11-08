@@ -7,8 +7,8 @@ import pandas as pd
 import pytest
 
 from src.backtests.pjm_oracle import label_windows, oracle_benchmark, price_response
-from src.ingest.pilot import load_manifest, market_chunks, pin
-from src.labels.pjm_events import _classification
+from src.ingest.pilot import load_manifest, market_chunks, missing_notice_pages, pin
+from src.labels.pjm_events import _classification, notice_candidates
 from src.normalize.market import normalize_lmps
 from src.normalize.pjm_panel import available_at_cutoff, hourly_panel
 from src.pjm_pilot import DEFAULT_CONFIG, build
@@ -37,6 +37,27 @@ def test_market_queries_split_at_utc_year_and_keep_all_delivery_hours():
     assert chunks[0][0].hour == 5 and chunks[-1][-1].hour == 4
     assert chunks[1][0] - chunks[0][-1] == timedelta(hours=1)
     assert sum(int((last - first).total_seconds() / 3600) + 1 for first, last in chunks) == 48
+
+
+def test_supplement_detects_missing_archive_pages_and_queues_possible_trip(tmp_path, config):
+    base = "https://www.nrc.gov/documents-reports/document-collections/events-reports-associated-with/event-notification-reports"
+    index = pin(tmp_path, "nrc_notice_index", (
+        f'<a href="{base}/2025/20251231en">31</a>'
+    ).encode(), ".html", f"{base}/2025", "2026-10-25T13:00:00Z", year=2025)
+    grouped = {"nrc_notice_index": [index]}
+    start, end = date(2025, 12, 30), date(2026, 1, 1)
+    assert missing_notice_pages(tmp_path, grouped, config, start, end) == ["2025-12-31", "index:2026"]
+    page = b"""<div>Power Reactor Event Number: 58123 Facility: Example Region: 1
+    Unit: [2] [] [] Event Date: 12/30/2025 Event Text Reactor trip</div>
+    <div>Event Number: 58124 Rep Org: Other Event Date: 12/30/2025</div>"""
+    notice = pin(tmp_path, "nrc_notice", page, ".html", f"{base}/2025/20251231en",
+                 "2026-10-25T13:00:00Z", report_date="2025-12-31")
+    grouped["nrc_notice"] = [notice]
+    assert missing_notice_pages(tmp_path, grouped, config, start, end) == ["index:2026"]
+    [candidate] = notice_candidates(page, notice)
+    assert candidate["event_id"] == "EN:58123"
+    assert candidate["event_date"] == date(2025, 12, 30)
+    assert candidate["candidate_source_id"] == notice["id"] and candidate["docket"] == ""
 
 
 def test_mixed_prices_use_feed_and_row_specific_values():

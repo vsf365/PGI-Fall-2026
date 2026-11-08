@@ -27,6 +27,8 @@ url = "https://noaa-global-hourly-pds.s3.amazonaws.com/{year}/{station}.csv"
 [sources]
 eia860_index = "https://www.eia.gov/electricity/data/eia860/"
 nrc_scrams = "https://www.nrc.gov/cdn/legacy/reactors/operating/dataset/scram-event-notifications.xlsx"
+nrc_scrams_through = "2025-05-12"
+nrc_notice_index = "https://www.nrc.gov/documents-reports/document-collections/events-reports-associated-with/event-notification-reports/{year}"
 da = "da_hrl_lmps"
 rt = "rt_hrl_lmps"
 load = "hrl_load_metered"

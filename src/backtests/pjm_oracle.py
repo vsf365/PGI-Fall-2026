@@ -20,7 +20,7 @@ def label_windows(panel: pd.DataFrame, ledger: pd.DataFrame, config: dict) -> tu
     blocked_days = set()
     event_days = set()
     for row in ledger.itertuples():
-        if row.exclusion in {"outside_pjm", "nrc_retracted"}:
+        if row.exclusion in {"outside_pjm", "nrc_retracted", "not_a_trip"}:
             continue
         nearby = {(row.event_date + timedelta(days=offset)).isoformat() for offset in (-1, 0, 1)}
         event_days.update(nearby)

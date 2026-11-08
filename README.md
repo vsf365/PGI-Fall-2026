@@ -27,6 +27,18 @@ dates and the upper bound is exclusive. Snapshot bytes and the versioned
 `inputs.json` are stored in the input directory. The manifest records SHA-256,
 source, and retrieval time. Keep the manifest and its snapshots together.
 
+The pinned NRC scram workbook runs through May 12, 2025. Before generating the
+holdout review queue, collect the remaining official event notices:
+
+```sh
+python -m src.pjm_pilot fetch --period holdout --root data/raw/pilot/holdout --group notices
+```
+
+The supplemental `EN:` candidates need a verified docket and manual
+classification. Mark an unrelated notice `not_a_trip` with the pinned notice
+as evidence. The coverage check requires the archived reports listed for
+the supplement window before the holdout can be scored.
+
 To import an official export or completed review file:
 
 ```sh

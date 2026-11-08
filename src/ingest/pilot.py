@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -19,7 +19,7 @@ from src.ingest.manifest import ManifestManager, compute_file_hash
 
 
 KINDS = {
-    "nrc_status", "nrc_scrams", "nrc_notice", "eia860", "da", "rt", "load",
+    "nrc_status", "nrc_scrams", "nrc_notice", "nrc_notice_index", "eia860", "da", "rt", "load",
     "weather", "crosswalk", "event_review", "calendar",
 }
 SINGLETONS = {"nrc_scrams", "crosswalk", "event_review", "calendar"}
@@ -104,6 +104,86 @@ def _download(session: requests.Session, url: str) -> requests.Response:
     return response
 
 
+def notice_range(config: dict, start: date, end: date) -> tuple[date, date] | None:
+    through = date.fromisoformat(config["sources"]["nrc_scrams_through"])
+    if end - timedelta(days=1) <= through:
+        return None
+    # Notices may appear after the physical event. Allow one week beyond the
+    # delivery window for the initial posting and near-boundary candidates.
+    return max(start, through), end + timedelta(days=7)
+
+
+def notice_links(html: bytes, url: str, start: date, end: date) -> dict[date, str]:
+    links = {}
+    for link in BeautifulSoup(html, "html.parser").find_all("a", href=True):
+        target = urljoin(url, link["href"])
+        parsed = urlsplit(target)
+        match = re.search(r"/(\d{8})en(?:\.html)?$", parsed.path, re.I)
+        if parsed.hostname == "www.nrc.gov" and match:
+            day = datetime.strptime(match[1], "%Y%m%d").date()
+            if start <= day < end:
+                links[day] = target
+    return links
+
+
+def missing_notice_pages(root: Path, by_kind: dict, config: dict, start: date, end: date) -> list[str]:
+    window = notice_range(config, start, end)
+    if window is None:
+        return []
+    lower, upper = window
+    indexes = {entry["metadata"].get("year"): entry for entry in by_kind.get("nrc_notice_index", [])}
+    captured = {entry["metadata"].get("report_date") for entry in by_kind.get("nrc_notice", [])}
+    missing = []
+    for year in range(lower.year, (upper - timedelta(days=1)).year + 1):
+        if year not in indexes:
+            missing.append(f"index:{year}")
+            continue
+        entry = indexes[year]
+        raw = (root / entry["path"]).read_bytes()
+        links = notice_links(raw, entry["source"], lower, upper)
+        if not notice_links(raw, entry["source"], date(year, 1, 1), date(year + 1, 1, 1)):
+            missing.append(f"unreadable_index:{year}")
+        missing.extend(day.isoformat() for day in sorted(links) if day.isoformat() not in captured)
+    return missing
+
+
+def _fetch_notice_archive(root: Path, config: dict, start: date, end: date, session: requests.Session) -> None:
+    import time as pacing
+
+    window = notice_range(config, start, end)
+    if window is None:
+        return
+    lower, upper = window
+    sources = load_manifest(root)
+    existing = {entry["metadata"].get("report_date") for entry in sources if entry["kind"] == "nrc_notice"}
+    indexes = {entry["metadata"].get("year"): entry for entry in sources if entry["kind"] == "nrc_notice_index"}
+    for year in range(lower.year, (upper - timedelta(days=1)).year + 1):
+        if year in indexes:
+            entry = indexes[year]
+        else:
+            url = config["sources"]["nrc_notice_index"].format(year=year)
+            response = session.get(url, timeout=60)
+            if response.status_code in (403, 404):
+                response = _download(session, f"https://www.nrc.gov/reading-rm/doc-collections/event-status/event/{year}/index")
+            response.raise_for_status()
+            if not notice_links(response.content, response.url, date(year, 1, 1), date(year + 1, 1, 1)):
+                raise ValueError(f"No notice links found in NRC archive index for {year}")
+            entry = pin(root, "nrc_notice_index", response.content, ".html", response.url, _now(), year=year)
+        links = notice_links((root / entry["path"]).read_bytes(), entry["source"], lower, upper)
+        for day, url in sorted(links.items()):
+            if day.isoformat() in existing:
+                continue
+            pacing.sleep(.4)
+            response = _download(session, url)
+            soup = BeautifulSoup(response.content, "html.parser")
+            content = soup.get_text(" ", strip=True)
+            report = soup.select_one(".nrc-event-report-day")
+            empty_report = report is not None and "No events found" in report.get_text(" ", strip=True)
+            if not empty_report and not re.search(r"Event\s+Number\s*:", content, re.I):
+                raise ValueError(f"Expected an NRC event report at {response.url}")
+            pin(root, "nrc_notice", response.content, ".html", response.url, _now(), report_date=day.isoformat())
+
+
 def market_chunks(start: date, end: date, delivery_timezone: str, days: int, today: date):
     """Query UTC ranges without crossing archive or calendar-year boundaries."""
     local = ZoneInfo(delivery_timezone)
@@ -161,6 +241,8 @@ def fetch(root: Path, config: dict, start: date, end: date, group: str) -> None:
             if not response.content.startswith(b"PK"):
                 raise ValueError("Expected NRC scram workbook bytes")
             pin(root, "nrc_scrams", response.content, ".xlsx", response.url, _now())
+        elif group == "notices":
+            _fetch_notice_archive(root, config, start, end, session)
         elif group == "weather":
             utc_end = datetime.combine(end, time.min, ZoneInfo(config["study"]["timezone"])).astimezone(timezone.utc)
             for year in range(start.year, (utc_end - timedelta(hours=1)).year + 1):

@@ -18,9 +18,9 @@ import requests
 
 from src.backtests.pjm_oracle import label_windows, oracle_benchmark, price_response
 from src.ingest.manifest import compute_file_hash
-from src.ingest.pilot import KINDS, SINGLETONS, fetch, load_manifest, pin, write_json
+from src.ingest.pilot import KINDS, SINGLETONS, fetch, load_manifest, missing_notice_pages, pin, write_json
 from src.labels.pjm_events import (
-    CROSSWALK_FIELDS, REVIEW_FIELDS, build_ledger, candidates, eia_generators, notification_numbers,
+    CROSSWALK_FIELDS, REVIEW_FIELDS, build_ledger, eia_generators, notification_numbers, review_queue,
 )
 from src.normalize.pjm_panel import CALENDAR_FIELDS, hourly_panel
 
@@ -63,12 +63,13 @@ def _dates(config: dict, period: str) -> tuple[date, date]:
     return start, end
 
 
-def _coverage(panel: pd.DataFrame, events: pd.DataFrame, sources: dict, config: dict,
+def _coverage(root: Path, panel: pd.DataFrame, events: pd.DataFrame, sources: dict, config: dict,
               start: date, end: date) -> dict:
     columns = ("da_archive_lmp", "da_lmp", "rt_lmp", "spread", "load_mw", "temperature_c", "dewpoint_c")
     missing_hours = {name: int(panel[name].isna().sum()) for name in columns}
     eligible = int(panel.study_eligible.sum())
     missing_sources = sorted(REQUIRED - sources.keys())
+    missing_notices = missing_notice_pages(root, sources, config, start, end)
     needed_years = set(range(start.year, (end - timedelta(days=1)).year + 1))
     years = {name: {entry["metadata"].get("year") for entry in sources.get(name, [])}
              for name in ("nrc_status", "eia860")}
@@ -79,13 +80,14 @@ def _coverage(panel: pd.DataFrame, events: pd.DataFrame, sources: dict, config: 
         "missing_hours": missing_hours,
         "conflicting_hours": {name: int(panel[f"{name}_conflict"].sum()) for name in ("da", "rt", "load")},
         "missing_sources": missing_sources, "missing_years": missing_years,
+        "missing_notice_pages": missing_notices,
         "eligible_hours": eligible, "reviewed_hours": int(panel.event_review_complete.sum()),
         "candidate_events": len(events), "qualified_events": int(events.eligible.sum()),
         "usable_events": int(events.post_start_utc.notna().sum()),
         "unreviewed_events": int(events.exclusion.eq("review_required").sum()),
         "exclusions": dict(Counter(events.loc[events.analysis_exclusion.ne(""), "analysis_exclusion"])),
         "study_ready": bool(
-            not missing_sources and not any(missing_years.values())
+            not missing_sources and not any(missing_years.values()) and not missing_notices
             and min(1 - missing_hours[name] / len(panel) for name in ("da_lmp", "rt_lmp")) >= study["min_market_coverage"]
             and min(1 - missing_hours[name] / len(panel) for name in ("load_mw", "temperature_c", "dewpoint_c"))
             >= study["min_control_coverage"]
@@ -132,7 +134,7 @@ def build(root: Path, output: Path, config_path: Path, config: dict, period: str
     panel = hourly_panel(root, sources, config, start, end)
     ledger = build_ledger(root, sources, config, start, end)
     panel, ledger = label_windows(panel, ledger, config)
-    coverage = _coverage(panel, ledger, sources, config, start, end)
+    coverage = _coverage(root, panel, ledger, sources, config, start, end)
     output.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=output.parent, prefix=".pilot-") as temporary:
         folder = Path(temporary)
@@ -164,9 +166,12 @@ def freeze(smoke: Path, replay: Path, development: Path, validation: Path,
         raise ValueError("Pinned smoke replay produced different artifacts")
     for path, period in ((development, "development"), (validation, "validation")):
         _verify_build(path, period, config_path)
-    holdout_sources = load_manifest(holdout_root)
-    if not REQUIRED.issubset({entry["kind"] for entry in holdout_sources}):
+    holdout_sources = _sources(holdout_root)
+    if not REQUIRED.issubset(holdout_sources):
         raise ValueError("Pin the holdout sources before freezing")
+    config = tomllib.loads(config_path.read_text())
+    if missing_notice_pages(holdout_root, holdout_sources, config, *_dates(config, "holdout")):
+        raise ValueError("Pin the supplemental NRC archive notices before freezing")
     write_json(output, {
         "identity": _identity(config_path), "smoke_artifacts": first["artifacts"],
         "development_sha256": compute_file_hash(development / "build.json"),
@@ -211,18 +216,20 @@ def study(development: Path, evaluation: Path, period: str, output: Path, config
     return report
 
 
-def _review_inputs(root: Path, output: Path, start: date, end: date) -> None:
+def _review_inputs(root: Path, output: Path, config: dict, start: date, end: date) -> None:
     sources = _sources(root)
     if "nrc_scrams" not in sources or "eia860" not in sources:
         raise ValueError("Fetch or pin the NRC scram workbook and EIA-860 ZIP first")
-    queue = candidates(root / sources["nrc_scrams"][0]["path"])
+    queue = review_queue(root, sources, config)
     queue = queue[queue.event_date.between(start - timedelta(days=1), end)]
     output.mkdir(parents=True, exist_ok=False)
     queue.to_csv(output / "candidates.csv", index=False)
     pd.concat([eia_generators(root / s["path"], s["metadata"]["year"]) for s in sources["eia860"]]).to_csv(
         output / "eia_generators.csv", index=False
     )
-    pd.DataFrame({"event_id": queue.event_id}, columns=REVIEW_FIELDS).fillna("").to_csv(
+    seed = queue[["event_id", "docket"]].copy()
+    seed["notice_source_id"] = queue.candidate_source_id.where(queue.event_id.str.startswith("EN:"), "")
+    pd.DataFrame(seed, columns=[*REVIEW_FIELDS, "docket"]).fillna("").to_csv(
         output / "event_review.csv", index=False
     )
     pd.DataFrame(columns=CROSSWALK_FIELDS).to_csv(output / "crosswalk.csv", index=False)
@@ -232,9 +239,11 @@ def _review_inputs(root: Path, output: Path, start: date, end: date) -> None:
     )
 
 
-def _fetch_notice(root: Path, event_id: str) -> dict:
-    source = _sources(root)["nrc_scrams"][0]
-    candidate = candidates(root / source["path"]).set_index("event_id").loc[event_id]
+def _fetch_notice(root: Path, config: dict, event_id: str) -> dict:
+    sources = _sources(root)
+    candidate = review_queue(root, sources, config).set_index("event_id").loc[event_id]
+    if event_id.startswith("EN:"):
+        return next(s for s in sources["nrc_notice"] if s["id"] == candidate.candidate_source_id)
     event_day = candidate.event_date
     legacy = "https://www.nrc.gov/reading-rm/doc-collections/event-status/event"
     # Some legacy links redirect to a different day's report. Confirm the
@@ -261,7 +270,7 @@ def _arguments() -> argparse.Namespace:
         if name in {"queue", "build"}:
             command.add_argument("--output", type=Path, required=True)
         if name == "fetch":
-            command.add_argument("--group", choices=("nrc", "eia", "weather", "pjm"), required=True)
+            command.add_argument("--group", choices=("nrc", "notices", "eia", "weather", "pjm"), required=True)
         if name == "notice":
             command.add_argument("event_id")
         if name == "pin":
@@ -296,9 +305,9 @@ def main() -> None:
                         args.source, args.retrieved_at, replace=args.replace, **metadata)
             print(entry["id"])
         elif args.command == "notice":
-            print(_fetch_notice(args.root, args.event_id)["id"])
+            print(_fetch_notice(args.root, config, args.event_id)["id"])
         elif args.command == "queue":
-            _review_inputs(args.root, args.output, *_dates(config, args.period))
+            _review_inputs(args.root, args.output, config, *_dates(config, args.period))
         elif args.command == "build":
             print(json.dumps(build(args.root, args.output, args.config, config, args.period, args.freeze), indent=2))
         elif args.command == "freeze":
