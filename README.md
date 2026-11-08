@@ -26,6 +26,17 @@ claim about what a trader knew at a given time. Establish publication/observatio
 latency, including a conservative delay sensitivity, before using status as a
 point-in-time predictor.
 
+Normalize one downloaded snapshot with:
+
+```sh
+python -m src.normalize.nrc data/raw/nrc/annual/<snapshot>.txt
+```
+
+The normalized JSONL retains the original fields and line number, maps the
+report date to `observed_at`, and leaves `published_at` and `available_at`
+empty. It preserves power as a percentage; converting to MW requires a
+capacity mapping with historical effective dates.
+
 ## Initial pipeline sequence
 
 1. Archive and inspect NRC annual files and their data dictionary.

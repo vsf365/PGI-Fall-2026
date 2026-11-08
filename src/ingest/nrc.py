@@ -22,7 +22,7 @@ from bs4 import BeautifulSoup
 
 from configs.config import MANIFEST_DIR, RAW_NRC
 
-ARCHIVE_URL = "https://www.nrc.gov/reading-rm/doc-collections/event-status/reactor-status/{year}/index"
+ARCHIVE_URL = "https://www.nrc.gov/documents-reports/document-collections/events-reports-associated-with/power-reactor-status-reports/{year}"
 PARSER_VERSION = "nrc-raw-1"
 
 
