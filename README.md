@@ -55,6 +55,24 @@ export the originally posted DA version. Pin EIA and NRC annual files with
 `--year`. Use `--replace` to select a revised review, crosswalk, or calendar
 while preserving the old snapshot bytes.
 
+### January exports without an API key
+
+In the public Data Miner interface, query January 2023 on the hourly DA and
+RT price feeds and filter **Pricing Node Type** to `ZONE` before exporting.
+The archive query disables the node ID filter. The build selects node `1`
+from the zone export. On the metered load feed, filter **Load Area** to
+`RTO`. Pin the three CSVs as `da`, `rt`, and `load`. Preserve all DA
+versions in the export. The posting calendar still supplies the evidence for
+which version was available before each event.
+
+For a separate retrospective load sensitivity, download an EIA-930
+[six-month balance CSV](https://www.eia.gov/electricity/930-content/about.html)
+and run `python -m src.normalize.eia930 input.csv pjm-demand.csv`. The
+normalizer uses reported PJM demand and subtracts one hour from the UTC hour
+ending timestamp. Its output can be joined to the pilot on
+`interval_start_utc`. Keep the EIA demand column separate from PJM metered
+load so the two controls can be compared.
+
 ## Review the evidence
 
 The queue command writes the scram candidates, EIA nuclear generators, and
