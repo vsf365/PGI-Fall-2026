@@ -39,6 +39,9 @@ class ManifestEntry:
     max_observed_at: Optional[str] = None
     revision_count: int = 0
     extra_metadata: Optional[Dict[str, Any]] = None
+    published_at: Optional[str] = None
+    publication_time_status: Optional[str] = None
+    file_path: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -79,7 +82,13 @@ class ManifestManager:
                     continue
                 data = json.loads(line)
                 if source_name is None or data.get("source_name") == source_name:
-                    entries.append(ManifestEntry(**data))
+                    known_fields = set(ManifestEntry.__dataclass_fields__)
+                    # Preserve forward-compatible source-specific fields instead of
+                    # failing when a collector adds provenance metadata.
+                    extras = {k: v for k, v in data.items() if k not in known_fields}
+                    if extras:
+                        data["extra_metadata"] = {**(data.get("extra_metadata") or {}), **extras}
+                    entries.append(ManifestEntry(**{k: v for k, v in data.items() if k in known_fields}))
         return entries
 
 
