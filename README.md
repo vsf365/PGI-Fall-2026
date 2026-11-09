@@ -73,6 +73,42 @@ ending timestamp. Its output can be joined to the pilot on
 `interval_start_utc`. Keep the EIA demand column separate from PJM metered
 load so the two controls can be compared.
 
+## Reactor-level environmental joins
+
+`src.features.environmental.environmental_features` builds a point-in-time
+reactor feature table from normalized NOAA or USGS observations and a manually
+reviewed station crosswalk. The crosswalk columns are `reactor_id`,
+`station_id`, `valid_from`, and `valid_to` (UTC timestamps, with `valid_to`
+exclusive and blank for an open-ended mapping). Observation columns are
+`station_id`, `observed_at`, `available_at`, `variable`, and `value`; target
+rows need `reactor_id` and `forecast_at`. `available_at` is required so records
+published after a forecast cutoff cannot enter that row. Each variable returns
+the mean of the latest available measurement from each active mapped station,
+the contributing station count, the oldest measurement age in hours, and the
+latest publication timestamp. Normalize units and quality flags before calling
+the join; keep forecast products separate from observations and map each with
+its own issue-time semantics. The existing PJM regional weather control remains
+the pilot baseline until station mappings and historical availability are
+reviewed.
+
+## Reactor-to-equity exposure mapping
+
+The point-in-time exposure foundation is in `src.market_mapping.exposure`.
+Start the reviewed relationship ledger from
+`data/manifests/asset_security_exposure_template.csv`; keep separate rows for
+operators, direct/co-owners, economic beneficiaries, parents, and securities.
+Do not infer a ticker from a reactor or company name. Each row needs a stable
+reactor and entity ID, effective dates, announcement/effective timestamps, and
+document URL plus page/section evidence. Use the controlled role, exposure,
+confidence, and review values defined in the module. `validate_exposures(frame)`
+returns a row-level exception queue for missing evidence, invalid dates or
+values, overlapping conflicts, duplicate IDs, and ownership totals above 100%.
+`get_exposure(frame, reactor_id, as_of_timestamp)` returns only reviewed rows
+that were announced and effective at that timezone-aware cutoff. Permanent
+issuer/security IDs and effective-dated ticker history should be retained so
+symbol changes do not break historical exposure. The template is intentionally
+empty until relationships are supported by reviewed source documents.
+
 ## Review the evidence
 
 The queue command writes the scram candidates, EIA nuclear generators, and
