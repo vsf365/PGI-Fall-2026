@@ -25,6 +25,10 @@ python -m src.pjm_pilot fetch --period smoke --root "$pilot" --group pjm
 python -m src.pjm_pilot queue --period smoke --root "$pilot" --output data/interim/pilot/smoke-review
 ```
 
+The PJM collector requests JSON downloads over bounded UTC ranges and checks
+the row count in the response headers. It queries the configured pricing node
+type (PJM RTO node 1 is `ZONE`) and the panel selects the node ID.
+
 The same workflow works for `development` (2018–2022), `validation` (2023),
 and `holdout` (2024–2025). Use a separate input directory for each period.
 Dates in [the pilot configuration](configs/pjm_pilot.toml) are local delivery

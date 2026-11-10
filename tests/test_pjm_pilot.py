@@ -5,8 +5,10 @@ import tomllib
 import numpy as np
 import pandas as pd
 import pytest
+from requests import Response
 
 from src.backtests.pjm_oracle import label_windows, oracle_benchmark, price_response
+from src.ingest import pjm
 from src.ingest.pilot import load_manifest, market_chunks, missing_notice_pages, pin
 from src.labels.pjm_events import _classification, notice_candidates
 from src.normalize.market import normalize_lmps
@@ -37,6 +39,25 @@ def test_market_queries_split_at_utc_year_and_keep_all_delivery_hours():
     assert chunks[0][0].hour == 5 and chunks[-1][-1].hour == 4
     assert chunks[1][0] - chunks[0][-1] == timedelta(hours=1)
     assert sum(int((last - first).total_seconds() / 3600) + 1 for first, last in chunks) == 48
+
+
+def test_pjm_download_paginates_using_the_header_total(monkeypatch):
+    starts = []
+
+    def get_page(url, *, params, **kwargs):
+        start = params["startRow"]
+        starts.append(start)
+        response = Response()
+        response.status_code = 200
+        response.headers["X-TotalRows"] = "2"
+        response._content = json.dumps([{"pnode_id": start}]).encode()
+        return response
+
+    monkeypatch.setattr(pjm.requests, "get", get_page)
+    rows = pjm._paginated_fetch("da_hrl_lmps", {"download": "true"},
+                                api_key="fixture", row_count=10, rate_sleep=0)
+    assert starts == [1, 2]
+    assert rows == [{"pnode_id": 1}, {"pnode_id": 2}]
 
 
 def test_supplement_detects_missing_archive_pages_and_queues_possible_trip(tmp_path, config):

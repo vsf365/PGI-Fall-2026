@@ -2,6 +2,7 @@
 timezone = "America/New_York"
 node_id = 1
 node_name = "PJM-RTO"
+node_type = "ZONE"
 load_area = "RTO"
 pre_hours = 6
 post_hours = 6

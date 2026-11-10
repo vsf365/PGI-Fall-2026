@@ -204,15 +204,20 @@ def market_chunks(start: date, end: date, delivery_timezone: str, days: int, tod
 def _fetch_pjm(root: Path, config: dict, start: date, end: date) -> None:
     if not pjm.PJM_API_KEY or pjm.PJM_API_KEY.startswith("PASTE_"):
         raise ValueError("PJM_API_KEY is required for live collection. Alternatively pin Data Miner exports.")
-    # Archive queries use the same feed and do not accept a pnode_id filter.
-    # Use aggregate type and select the configured node when building the panel.
+    # Archived prices support the node type filter. The panel selects the node ID.
+    study = config["study"]
     today = datetime.now(timezone.utc).date()
     for kind in ("da", "rt", "load"):
         feed = config["sources"][kind]
-        chunks = market_chunks(start, end, config["study"]["timezone"], 7 if kind != "load" else 28, today)
+        chunks = market_chunks(start, end, study["timezone"], 7 if kind != "load" else 28, today)
         for first, last in chunks:
-            query = {"datetime_beginning_utc": f"{first:%m/%d/%Y %H:%M} to {last:%m/%d/%Y %H:%M}"}
-            query.update({"load_area": config["study"]["load_area"]} if kind == "load" else {"type": "AGGREGATE"})
+            last_second = last + timedelta(minutes=59, seconds=59)
+            query = {
+                "datetime_beginning_utc": f"{first:%Y-%m-%d %H:%M:%S} to {last_second:%Y-%m-%d %H:%M:%S}",
+                "download": "true",
+                "format": "json",
+            }
+            query.update({"load_area": study["load_area"]} if kind == "load" else {"type": study.get("node_type", "ZONE")})
             pages = []
             rows = pjm._paginated_fetch(
                 feed, query, try_archived_fallback=False,

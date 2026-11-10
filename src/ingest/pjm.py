@@ -255,25 +255,28 @@ def _paginated_fetch(
         if not isinstance(items, list) or not isinstance(payload, (dict, list)):
             raise ValueError(f"Unexpected response schema for {current_feed}")
 
-        if not items:
-            # If no items returned on page 1 and not yet archived, try archived feed once
-            if page == 1 and try_archived_fallback and not current_feed.endswith("_archived"):
-                logger.info(
-                    f"No items in {current_feed}, checking if archived feed exists: {feed_name}_archived"
-                )
-                current_feed = f"{feed_name}_archived"
-                endpoint_url = f"{PJM_BASE_URL}/{current_feed}"
-                continue
-            logger.info(f"No further records returned for {current_feed}. Finished pagination.")
-            break
+        if not items and page == 1 and try_archived_fallback and not current_feed.endswith("_archived"):
+            logger.info(
+                f"No items in {current_feed}, checking if archived feed exists: {feed_name}_archived"
+            )
+            current_feed = f"{feed_name}_archived"
+            endpoint_url = f"{PJM_BASE_URL}/{current_feed}"
+            continue
 
-        if on_page:
-            on_page(response)
+        # JSON downloads return a bare list and put the count in a header.
+        if total_rows is None:
+            total_rows = response.headers.get("X-TotalRows")
         if total_rows is not None:
             total_rows = int(total_rows)
             if expected_total is not None and expected_total != total_rows:
                 raise ValueError(f"Row count changed during pagination for {current_feed}")
             expected_total = total_rows
+        if not items:
+            logger.info(f"No further records returned for {current_feed}. Finished pagination.")
+            break
+
+        if on_page:
+            on_page(response)
         all_records.extend(items)
         logger.info(f"Fetched {len(items)} records (total accumulated: {len(all_records)})")
 
