@@ -86,25 +86,58 @@ def _by_hour(rows: pd.DataFrame, value: str) -> dict:
     return dict(tuple(rows.groupby("interval_start_utc")))
 
 
+def _ghcnh_weather(path: Path, stations: dict[str, str]) -> pd.DataFrame:
+    fields = {"temperature": "temperature_c", "dew_point_temperature": "dewpoint_c"}
+    columns = ["STATION", "DATE"]
+    for field in fields:
+        columns.extend([field, f"{field}_Quality_Code", f"{field}_Source_Code"])
+    data = pd.read_csv(path, sep="|", usecols=columns, dtype=str)
+    data["STATION"] = data.STATION.map({ghcnh: isd for isd, ghcnh in stations.items()})
+    if data.STATION.isna().any():
+        raise ValueError(f"Unknown GHCNh station in {path}")
+    # GHCNh preserves source-specific numeric QC codes and uses letters for failures.
+    isd_sources = {"313", "314", "315", "322", "335", "343", "344", "346"}
+    other_sources = {"220", "221", "222", "223", "347", "348"}
+    for field, column in fields.items():
+        source = data[f"{field}_Source_Code"]
+        quality = data[f"{field}_Quality_Code"]
+        accepted = (source.isin(isd_sources) & quality.isin({"0", "1", "4", "5"})) | (
+            source.isin(other_sources) & quality.eq("1")
+        )
+        values = pd.to_numeric(data[field], errors="coerce")
+        data[column] = values.where(accepted & values.between(-90, 65))
+    return data
+
+
 def _weather(root: Path, sources: list[dict], config: dict) -> pd.DataFrame:
     batches = []
     for source in sources:
-        data = pd.read_csv(root / source["path"], usecols=["STATION", "DATE", "TMP", "DEW"], dtype=str)
+        path = root / source["path"]
+        is_ghcnh = path.suffix == ".psv"
+        if is_ghcnh:
+            data = _ghcnh_weather(path, config["weather"]["ghcnh_stations"])
+        else:
+            data = pd.read_csv(path, usecols=["STATION", "DATE", "TMP", "DEW"], dtype=str)
+            for field, column in (("TMP", "temperature_c"), ("DEW", "dewpoint_c")):
+                bits = data[field].str.extract(r"^([+-]\d{4}),([0145])$")
+                values = pd.to_numeric(bits[0], errors="coerce").div(10)
+                data[column] = values.where(values.between(-90, 65))
         data = data[data.STATION.isin(config["weather"]["stations"])].copy()
         data["time"] = pd.to_datetime(data.DATE, utc=True, format="mixed")
         data["interval_start_utc"] = data.time.dt.floor("h")
-        for field, column in (("TMP", "temperature_c"), ("DEW", "dewpoint_c")):
-            bits = data[field].str.extract(r"^([+-]\d{4}),([0145])$")
-            values = pd.to_numeric(bits[0], errors="coerce").div(10)
-            data[column] = values.where(values.between(-90, 65))
+        data["source_priority"] = int(is_ghcnh)
         data["source_id"] = source["id"]
-        batches.append(data.dropna(subset=["temperature_c", "dewpoint_c"]))
+        batches.append(data[["STATION", "time", "interval_start_utc", "source_priority", "source_id",
+                             "temperature_c", "dewpoint_c"]].dropna(subset=["temperature_c", "dewpoint_c"]))
     cols = ["temperature_c", "dewpoint_c", "weather_stations", "weather_source_ids"]
     if not batches:
         return pd.DataFrame(columns=cols, index=pd.DatetimeIndex([], tz="UTC"))
     combined = pd.concat(batches, ignore_index=True)
-    latest = combined.groupby(["interval_start_utc", "STATION"]).time.transform("max")
-    readings = combined[combined.time.eq(latest)].groupby(["interval_start_utc", "STATION"]).agg(
+    station_hour = ["interval_start_utc", "STATION"]
+    priority = combined.groupby(station_hour).source_priority.transform("min")
+    combined = combined[combined.source_priority.eq(priority)]
+    latest = combined.groupby(station_hour).time.transform("max")
+    readings = combined[combined.time.eq(latest)].groupby(station_hour).agg(
         temperature_c=("temperature_c", "first"), dewpoint_c=("dewpoint_c", "first"),
         temp_values=("temperature_c", "nunique"), dew_values=("dewpoint_c", "nunique"),
         source_id=("source_id", lambda ids: ";".join(sorted(set(ids)))),

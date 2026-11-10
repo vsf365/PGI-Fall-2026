@@ -9,7 +9,7 @@ from requests import Response
 
 from src.backtests.pjm_oracle import label_windows, oracle_benchmark, price_response
 from src.ingest import pjm
-from src.ingest.pilot import load_manifest, market_chunks, missing_notice_pages, pin
+from src.ingest.pilot import fetch, load_manifest, market_chunks, missing_notice_pages, pin
 from src.labels.pjm_events import _classification, notice_candidates
 from src.normalize.market import normalize_lmps
 from src.normalize.pjm_panel import available_at_cutoff, hourly_panel
@@ -58,6 +58,55 @@ def test_pjm_download_paginates_using_the_header_total(monkeypatch):
                                 api_key="fixture", row_count=10, rate_sleep=0)
     assert starts == [1, 2]
     assert rows == [{"pnode_id": 1}, {"pnode_id": 2}]
+
+
+def test_ghcnh_fills_station_hours_with_quality_accepted_celsius(tmp_path, config):
+    station = config["weather"]["stations"][0]
+    config["study"]["min_weather_stations"] = 1
+    legacy = pin_test(tmp_path, "weather", pd.DataFrame([{
+        "STATION": station, "DATE": "2025-09-01T04:10:00", "TMP": "+0200,1", "DEW": "+0100,1",
+    }]).to_csv(index=False).encode(), ".csv")
+    base = {
+        "STATION": config["weather"]["ghcnh_stations"][station],
+        "temperature": "21.5", "dew_point_temperature": "11.5",
+        "temperature_Source_Code": "223", "dew_point_temperature_Source_Code": "223",
+        "temperature_Quality_Code": "1", "dew_point_temperature_Quality_Code": "1",
+    }
+    rows = [
+        {**base, "DATE": "2025-09-01T04:50:00"},
+        {**base, "DATE": "2025-09-01T05:50:00"},
+        {**base, "DATE": "2025-09-01T06:50:00", "temperature_Quality_Code": "s"},
+        {**base, "DATE": "2025-09-01T07:50:00", "temperature_Quality_Code": "5"},
+        {**base, "DATE": "2025-09-01T08:50:00", "temperature": "-9999"},
+    ]
+    ghcnh = pin_test(tmp_path, "weather", pd.DataFrame(rows).to_csv(sep="|", index=False).encode(), ".psv")
+    panel = hourly_panel(tmp_path, {"weather": [ghcnh, legacy]}, config, date(2025, 9, 1), date(2025, 9, 2))
+    assert panel.iloc[0].temperature_c == 20 and panel.iloc[0].dewpoint_c == 10
+    assert panel.iloc[0].weather_source_ids == legacy["id"]
+    assert panel.iloc[1].temperature_c == 21.5 and panel.iloc[1].dewpoint_c == 11.5
+    assert panel.iloc[1].weather_source_ids == ghcnh["id"]
+    assert panel.iloc[2:5].temperature_c.isna().all()
+
+
+def test_weather_fetch_uses_ghcnh_after_isd_retirement(tmp_path, config, monkeypatch):
+    urls = []
+
+    def get_weather(session, url, **kwargs):
+        urls.append(url)
+        response = Response()
+        response.status_code = 200
+        response.url = url
+        station = url.rsplit("/", 1)[1].split("_")[1]
+        response._content = (
+            f"STATION|DATE|temperature|dew_point_temperature\n{station}|2026-01-01T00:00:00|1.5|-2.5\n"
+        ).encode()
+        return response
+
+    monkeypatch.setattr("requests.Session.get", get_weather)
+    fetch(tmp_path, config, date(2026, 1, 1), date(2026, 1, 2), "weather")
+    assert len(urls) == 4 and all("/2026/psv/GHCNh_" in url for url in urls)
+    sources = load_manifest(tmp_path)
+    assert all(entry["path"].endswith(".psv") for entry in sources)
 
 
 def test_supplement_detects_missing_archive_pages_and_queues_possible_trip(tmp_path, config):

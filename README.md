@@ -88,6 +88,13 @@ ending timestamp. Its output can be joined to the pilot on
 `interval_start_utc`. Keep the EIA demand column separate from PJM metered
 load so the two controls can be compared.
 
+NOAA retired Global Hourly (ISD) in August 2025. The weather collector also
+pins its GHCNh successor from 2025 onward for the same four airports, using
+the checked-in WBAN station mapping. The panel uses quality-accepted
+GHCNh temperature and dew point in Celsius when a station-hour lacks an
+accepted ISD pair. Both products retain source IDs and unverified
+historical availability. [NOAA retirement notice](https://www.nesdis.noaa.gov/news/service-location-change-integrated-surface-data-global-hourly) · [GHCNh format and quality codes](https://www.ncei.noaa.gov/oa/global-historical-climatology-network/hourly/doc/ghcnh_DOCUMENTATION.pdf)
+
 ## Reactor-level environmental joins
 
 `src.features.environmental.environmental_features` builds a point-in-time

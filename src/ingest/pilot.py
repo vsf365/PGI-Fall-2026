@@ -250,12 +250,22 @@ def fetch(root: Path, config: dict, start: date, end: date, group: str) -> None:
             _fetch_notice_archive(root, config, start, end, session)
         elif group == "weather":
             utc_end = datetime.combine(end, time.min, ZoneInfo(config["study"]["timezone"])).astimezone(timezone.utc)
+            weather = config["weather"]
+            isd_last_year = weather.get("isd_last_year", (utc_end - timedelta(hours=1)).year)
             for year in range(start.year, (utc_end - timedelta(hours=1)).year + 1):
-                for station in config["weather"]["stations"]:
-                    response = _download(session, config["weather"]["url"].format(year=year, station=station))
-                    if not response.content.lstrip().startswith(b'"STATION"'):
-                        raise ValueError(f"Expected Global Hourly station CSV at {response.url}")
-                    pin(root, "weather", response.content, ".csv", response.url, _now(), station=station, year=year)
+                for station in weather["stations"]:
+                    if year <= isd_last_year:
+                        response = _download(session, weather["url"].format(year=year, station=station))
+                        if not response.content.lstrip().startswith(b'"STATION"'):
+                            raise ValueError(f"Expected Global Hourly station CSV at {response.url}")
+                        pin(root, "weather", response.content, ".csv", response.url, _now(), station=station, year=year)
+                    if year >= isd_last_year and "ghcnh_url" in weather:
+                        station_id = weather["ghcnh_stations"][station]
+                        response = _download(session, weather["ghcnh_url"].format(year=year, station=station_id))
+                        if not response.content.lstrip().startswith(b"STATION|"):
+                            raise ValueError(f"Expected GHCNh station PSV at {response.url}")
+                        pin(root, "weather", response.content, ".psv", response.url, _now(),
+                            station=station, ghcnh_station=station_id, year=year)
         elif group == "eia":
             response = _download(session, config["sources"]["eia860_index"])
             links = BeautifulSoup(response.content, "html.parser").find_all("a", href=True)

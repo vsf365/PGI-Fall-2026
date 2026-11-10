@@ -24,6 +24,14 @@ holdout = ["2024-01-01", "2026-01-01"]
 # Chicago O'Hare, Pittsburgh International, Philadelphia International, Baltimore/Washington.
 stations = ["72530094846", "72520094823", "72408013739", "72406093721"]
 url = "https://noaa-global-hourly-pds.s3.amazonaws.com/{year}/{station}.csv"
+isd_last_year = 2025
+ghcnh_url = "https://www.ncei.noaa.gov/oa/global-historical-climatology-network/hourly/access/by-year/{year}/psv/GHCNh_{station}_{year}.psv"
+
+[weather.ghcnh_stations]
+72530094846 = "USW00094846"
+72520094823 = "USW00094823"
+72408013739 = "USW00013739"
+72406093721 = "USW00093721"
 
 [sources]
 eia860_index = "https://www.eia.gov/electricity/data/eia860/"
