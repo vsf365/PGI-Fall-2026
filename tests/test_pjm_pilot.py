@@ -1,6 +1,7 @@
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 import json
 import tomllib
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -39,6 +40,18 @@ def test_market_queries_split_at_utc_year_and_keep_all_delivery_hours():
     assert chunks[0][0].hour == 5 and chunks[-1][-1].hour == 4
     assert chunks[1][0] - chunks[0][-1] == timedelta(hours=1)
     assert sum(int((last - first).total_seconds() / 3600) + 1 for first, last in chunks) == 48
+
+
+@pytest.mark.parametrize("today", [date(2026, 7, 10), date(2026, 11, 10)])
+def test_market_queries_split_at_the_eastern_archive_boundary(today):
+    cutoff = today - timedelta(days=731)
+    chunks = list(market_chunks(cutoff - timedelta(days=2), cutoff + timedelta(days=3),
+                               "America/New_York", 7, today))
+    boundary = datetime.combine(cutoff, time.min, ZoneInfo("America/New_York")).astimezone(timezone.utc)
+    assert boundary in {first for first, _ in chunks}
+    assert not any(first < boundary <= last for first, last in chunks)
+    assert sum(int((last - first).total_seconds() / 3600) + 1 for first, last in chunks) == 120
+    assert all(second[0] - first[1] == timedelta(hours=1) for first, second in zip(chunks, chunks[1:]))
 
 
 def test_pjm_download_paginates_using_the_header_total(monkeypatch):

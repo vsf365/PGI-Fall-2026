@@ -191,8 +191,11 @@ def market_chunks(start: date, end: date, delivery_timezone: str, days: int, tod
     upper = datetime.combine(end, time.min, local).astimezone(timezone.utc)
     cutoff = today - timedelta(days=731)
     dates = [date(year, 1, 1) for year in range(lower.year + 1, upper.year + 1)]
-    dates += [cutoff + timedelta(days=offset) for offset in (-1, 0, 1, 2)]
+    cutoff_dates = [cutoff + timedelta(days=offset) for offset in (-1, 0, 1, 2)]
+    dates += cutoff_dates
     breaks = [datetime.combine(day, time.min, timezone.utc) for day in dates]
+    # PJM's moving archive boundary falls at midnight Eastern, inside a UTC day.
+    breaks += [datetime.combine(day, time.min, local).astimezone(timezone.utc) for day in cutoff_dates]
     boundaries = [lower, *sorted({d for d in breaks if lower < d < upper}), upper]
     for first, last in zip(boundaries, boundaries[1:]):
         while first < last:
