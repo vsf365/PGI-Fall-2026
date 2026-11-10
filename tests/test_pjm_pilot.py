@@ -107,6 +107,24 @@ def test_panel_pins_posted_vintage_and_flags_conflicting_outcome(tmp_path, confi
     assert pd.isna(second.da_lmp) and pd.isna(second.spread) and second.rt_lmp == 12
 
 
+def test_settlement_prices_cannot_supply_the_benchmarks_posted_vintage(tmp_path, config):
+    settled = pin_test(tmp_path, "settled", (
+        "datetime_beginning_utc,pnode_id,pnode_name,total_lmp_da,total_lmp_rt\n"
+        "1/5/2023 5:00:00 AM,1,PJM,25,31\n"
+        "1/5/2023 5:00:00 AM,2,Other,90,100\n"
+    ).encode(), ".csv")
+    audit = pin_test(tmp_path, "calendar", (
+        "delivery_date,da_available_at,da_clock_type,da_version,da_evidence,"
+        "event_review_complete,event_evidence,grid_disruption\n"
+        "2023-01-05,2023-01-04T13:30:00-05:00,verified_by,unversioned,posting log,yes,scram review,no\n"
+    ).encode(), ".csv")
+    panel = hourly_panel(tmp_path, {"settled": [settled], "calendar": [audit]}, config,
+                         date(2023, 1, 5), date(2023, 1, 6))
+    first = panel.iloc[0]
+    assert first.settled_spread == 6 and first.settled_source_ids == settled["id"]
+    assert panel[["da_lmp", "da_available_at", "rt_lmp", "spread"]].isna().all().all()
+
+
 @pytest.mark.parametrize(("classification", "onset", "exclusion"), [
     ("planned", "2023-01-05T12:42:00-05:00", "planned"),
     ("ambiguous", "", "ambiguous"),

@@ -156,6 +156,20 @@ def _calendar_split(delivery: date, periods: dict) -> str:
     return "outside"
 
 
+def _settled_prices(root: Path, sources: list[dict], node_id: int) -> dict:
+    rows = pd.DataFrame.from_records([
+        row for row in market_records(root, sources, "rt_da_monthly_lmps")
+        if str(row.get("pnode_id")) == str(node_id)
+    ])
+    if rows.empty:
+        return {}
+    rows["interval_start_utc"] = pd.to_datetime(rows.datetime_beginning_utc, utc=True, format="mixed")
+    return {
+        kind: _by_hour(rows, f"total_lmp_{kind}")
+        for kind in ("da", "rt")
+    }
+
+
 def hourly_panel(root: Path, by_kind: dict, config: dict, start: date, end: date) -> pd.DataFrame:
     study = config["study"]
     tz = study["timezone"]
@@ -184,6 +198,7 @@ def hourly_panel(root: Path, by_kind: dict, config: dict, start: date, end: date
     if not load.empty:
         load["interval_start_utc"] = pd.to_datetime(load.datetime_beginning_utc, utc=True, format="mixed")
     load_by_hour = _by_hour(load, "mw")
+    settled = _settled_prices(root, by_kind.get("settled", []), study["node_id"])
     calendar = _calendar(root, by_kind.get("calendar", []), tz)
     empty = pd.DataFrame()
     records = []
@@ -197,6 +212,12 @@ def hourly_panel(root: Path, by_kind: dict, config: dict, start: date, end: date
         verified_price, _, verified_id = _resolve(day_prices, "value", audit["da_version"]) if pd.notna(verified_at) else (np.nan, False, "")
         rt_price, rt_conflict, rt_id = _resolve(rt.get(timestamp, empty), "value")
         load_mw, load_conflict, load_id = _resolve(load_by_hour.get(timestamp, empty), "mw")
+        settled_da, settled_da_conflict, settled_da_id = _resolve(
+            settled.get("da", {}).get(timestamp, empty), "total_lmp_da"
+        )
+        settled_rt, settled_rt_conflict, settled_rt_id = _resolve(
+            settled.get("rt", {}).get(timestamp, empty), "total_lmp_rt"
+        )
         records.append({
             "interval_start_utc": timestamp, "delivery_date": delivery.isoformat(),
             "split": _calendar_split(delivery, config["periods"]),
@@ -205,6 +226,10 @@ def hourly_panel(root: Path, by_kind: dict, config: dict, start: date, end: date
             "da_lmp": verified_price, "da_available_at": verified_at if np.isfinite(verified_price) else pd.NaT,
             "da_clock_type": audit.get("da_clock_type", ""), "rt_lmp": rt_price,
             "spread": rt_price - verified_price, "archive_spread": rt_price - archive_price,
+            "settled_da_lmp": settled_da, "settled_rt_lmp": settled_rt,
+            "settled_spread": settled_rt - settled_da,
+            "settled_conflict": settled_da_conflict or settled_rt_conflict,
+            "settled_source_ids": ";".join(sorted({settled_da_id, settled_rt_id} - {""})),
             "load_mw": load_mw, "da_conflict": da_conflict, "rt_conflict": rt_conflict,
             "load_conflict": load_conflict, "da_source_ids": verified_id or archive_id,
             "rt_source_ids": rt_id, "load_source_ids": load_id,

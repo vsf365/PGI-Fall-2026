@@ -11,6 +11,11 @@ Run from the repository root with Python 3.11 or later. Install the dependencies
 in `requirements.txt` and set `PJM_API_KEY` in the ignored `configs/.env` or
 your environment. Use a single writer per input directory.
 
+For a non-member account, follow the provisioning instructions in the
+[PJM Data Miner API guide](https://www.pjm.com/-/media/DotCom/etools/data-miner-2/data-miner-2-api-guide.ashx).
+Once PJM approves access, use **Profile** in the API Portal to reveal the
+subscription's **Primary Key**.
+
 ```sh
 pilot=data/raw/pilot/smoke
 python -m src.pjm_pilot fetch --period smoke --root "$pilot" --group nrc
@@ -64,6 +69,12 @@ from the zone export. On the metered load feed, filter **Load Area** to
 `RTO`. Pin the three CSVs as `da`, `rt`, and `load`. Preserve all DA
 versions in the export. The posting calendar still supplies the evidence for
 which version was available before each event.
+
+For longer periods, PJM's [Settlements Verified Hourly LMPs](https://dataminer2.pjm.com/feed/rt_da_monthly_lmps)
+feed accepts a node ID filter. Export both prices together and pin the CSV as
+`settled`. The panel shows these prices in the `settled_*` columns for
+retrospective checks. This feed has no DA version or posting timestamp, so it
+does not supply the benchmark's day-ahead inputs.
 
 For a separate retrospective load sensitivity, download an EIA-930
 [six-month balance CSV](https://www.eia.gov/electricity/930-content/about.html)

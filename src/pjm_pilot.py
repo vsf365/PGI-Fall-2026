@@ -65,7 +65,8 @@ def _dates(config: dict, period: str) -> tuple[date, date]:
 
 def _coverage(root: Path, panel: pd.DataFrame, events: pd.DataFrame, sources: dict, config: dict,
               start: date, end: date) -> dict:
-    columns = ("da_archive_lmp", "da_lmp", "rt_lmp", "spread", "load_mw", "temperature_c", "dewpoint_c")
+    columns = ("da_archive_lmp", "da_lmp", "rt_lmp", "spread", "load_mw", "temperature_c", "dewpoint_c",
+               "settled_da_lmp", "settled_rt_lmp", "settled_spread")
     missing_hours = {name: int(panel[name].isna().sum()) for name in columns}
     eligible = int(panel.study_eligible.sum())
     missing_sources = sorted(REQUIRED - sources.keys())
@@ -78,7 +79,7 @@ def _coverage(root: Path, panel: pd.DataFrame, events: pd.DataFrame, sources: di
     return {
         "start": start.isoformat(), "end_exclusive": end.isoformat(), "hours": len(panel),
         "missing_hours": missing_hours,
-        "conflicting_hours": {name: int(panel[f"{name}_conflict"].sum()) for name in ("da", "rt", "load")},
+        "conflicting_hours": {name: int(panel[f"{name}_conflict"].sum()) for name in ("da", "rt", "load", "settled")},
         "missing_sources": missing_sources, "missing_years": missing_years,
         "missing_notice_pages": missing_notices,
         "eligible_hours": eligible, "reviewed_hours": int(panel.event_review_complete.sum()),

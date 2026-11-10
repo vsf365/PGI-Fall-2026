@@ -19,7 +19,7 @@ from src.ingest.manifest import ManifestManager, compute_file_hash
 
 
 KINDS = {
-    "nrc_status", "nrc_scrams", "nrc_notice", "nrc_notice_index", "eia860", "da", "rt", "load",
+    "nrc_status", "nrc_scrams", "nrc_notice", "nrc_notice_index", "eia860", "da", "rt", "load", "settled",
     "weather", "crosswalk", "event_review", "calendar",
 }
 SINGLETONS = {"nrc_scrams", "crosswalk", "event_review", "calendar"}
