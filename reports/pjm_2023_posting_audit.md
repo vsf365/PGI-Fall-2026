@@ -34,3 +34,37 @@ The nine dates cover event windows only. The benchmark also needs
 publication evidence and completed event and disruption review for the
 comparison hours. The local audit calendar leaves posting times blank until
 there is evidence for the relevant price version.
+
+## Draft request to PJM Data Miner support
+
+**To** — dataminer2support@pjm.com. [PJM Data Miner support contact](https://www.pjm.com/-/media/DotCom/committees-groups/forums/tech-change/2026/20260209/20260209-item-04b---product-roadmap---data-miner.pdf#page=8)
+
+**Subject** — Historical day-ahead LMP posting and repost records for PJM RTO
+
+Hello PJM Data Miner support,
+
+I am using Data Miner for a research study and need to establish when the
+day-ahead hourly LMP for PJM RTO (pricing node ID 1, feed `da_hrl_lmps`) first
+became available. Could you provide the historical posting and repost
+timestamps, or direct me to an archive that contains them?
+
+The priority delivery dates are January 5, August 9–11, and November 7, 9, 10,
+15, and 16, all in 2023. For each date, could you provide the first
+publication timestamp with a UTC offset, the corresponding
+`version_nbr`, and any later repost timestamps, versions, and affected
+delivery hours for node 1? Please indicate whether each time refers to
+publication in Data Miner, Markets Gateway, or another system. An archived
+notification that establishes when the applicable version was already
+available would also help.
+
+For the comparison hours, could you provide the same records for all
+delivery dates from January 1, 2018 through December 31, 2025, preferably
+as a machine-readable file? If you can provide only a subset, a complete
+2023 extract would help us check the validation period first. If the
+timestamps are unavailable, can PJM verify a latest publication time for
+the original version on individual dates and identify any exceptions or
+reposts?
+
+Thank you,
+
+Varun Fuloria
